@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>张凯艳 - 3D粒子文字</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #030305; }
+        canvas { display: block; }
+        #ui {
+            position: absolute;
+            top: 30px;
+            width: 100%;
+            text-align: center;
+            color: #555;
+            font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+            font-size: 14px;
+            letter-spacing: 4px;
+            pointer-events: none;
+            text-transform: uppercase;
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui">Particle Morphing: 张凯艳</div>
+
+<script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    // --- 配置 ---
+    const TEXT_STR = "张凯艳"; 
+    const STEP = 2;                 // 扫描精度（数值越小，笔画越细腻）
+    const SPREAD = 1000;            // 初始随机散开的范围
+    const CHAR_INTERVAL = 160;      // 中文字符间距
+
+    // 1. 基础场景搭建
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+    camera.position.set(0, 0, 350);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    // 2. 逐字像素扫描函数
+    function createCharParticles(char, xOffset) {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = 256;
+        canvas.height = 256;
+
+        // 绘制中文字符
+        ctx.fillStyle = 'white';
+        // 优先使用黑体，确保笔画浑厚
+        ctx.font = 'bold 180px "PingFang SC", "Microsoft YaHei", "SimHei", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(char, 128, 128);
+
+        const imageData = ctx.getImageData(0, 0, 256, 256).data;
+        const targets = [];
+
+        for (let y = 0; y < 256; y += STEP) {
+            for (let x = 0; x < 256; x += STEP) {
+                const i = (y * 256 + x) * 4;
+                if (imageData[i + 3] > 128) { // 识别非透明像素
+                    targets.push({
+                        x: (x - 128) + xOffset,
+                        y: -(y - 128),
+                        z: 0
+                    });
+                }
+            }
+        }
+        return targets;
+    }
+
+    // 3. 整合所有粒子的数据
+    const allTargets = [];
+    const startX = -( (TEXT_STR.length - 1) * CHAR_INTERVAL ) / 2;
+    const charGroups = []; 
+    let currentIdx = 0;
+
+    for (let i = 0; i < TEXT_STR.length; i++) {
+        const charTargets = createCharParticles(TEXT_STR[i], startX + i * CHAR_INTERVAL);
+        charGroups.push({
+            start: currentIdx,
+            count: charTargets.length,
+            targets: charTargets
+        });
+        allTargets.push(...charTargets);
+        currentIdx += charTargets.length;
+    }
+
+    const totalCount = allTargets.length;
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(totalCount * 3);
+    const startPositions = new Float32Array(totalCount * 3);
+    const colors = new Float32Array(totalCount * 3);
+    const colorObj = new THREE.Color();
+
+    for (let i = 0; i < totalCount; i++) {
+        const i3 = i * 3;
+        // 起始位置：全空间随机
+        startPositions[i3] = (Math.random() - 0.5) * SPREAD;
+        startPositions[i3+1] = (Math.random() - 0.5) * SPREAD;
+        startPositions[i3+2] = (Math.random() - 0.5) * SPREAD;
+
+        positions[i3] = startPositions[i3];
+        positions[i3+1] = startPositions[i3+1];
+        positions[i3+2] = startPositions[i3+2];
+
+        // 颜色设计：从左到右渐变（紫罗兰到青色）
+        const hue = 0.7 + (allTargets[i].x / 1000);
+        colorObj.setHSL(hue % 1.0, 0.8, 0.6);
+        colors[i3] = colorObj.r;
+        colors[i3+1] = colorObj.g;
+        colors[i3+2] = colorObj.b;
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    const material = new THREE.PointsMaterial({
+        size: 2,
+        vertexColors: true,
+        blending: THREE.AdditiveBlending,
+        transparent: true,
+        depthWrite: false
+    });
+
+    const points = new THREE.Points(geometry, material);
+    scene.add(points);
+
+    // 4. GSAP 逐字依次聚合动画
+    const mainTimeline = gsap.timeline({ delay: 1 });
+
+    charGroups.forEach((group, index) => {
+        const proxy = { progress: 0 };
+        
+        mainTimeline.to(proxy, {
+            progress: 1,
+            duration: 2.0,
+            ease: "power4.out",
+            onUpdate: () => {
+                const posAttr = geometry.attributes.position.array;
+                for (let i = group.start; i < group.start + group.count; i++) {
+                    const i3 = i * 3;
+                    const target = group.targets[i - group.start];
+                    
+                    // 插值计算：从随机位置到目标位置
+                    posAttr[i3]   = startPositions[i3]   + (target.x - startPositions[i3])   * proxy.progress;
+                    posAttr[i3+1] = startPositions[i3+1] + (target.y - startPositions[i3+1]) * proxy.progress;
+                    posAttr[i3+2] = startPositions[i3+2] + (target.z - startPositions[i3+2]) * proxy.progress;
+                }
+                geometry.attributes.position.needsUpdate = true;
+            }
+        }, index * 0.4); // 每个字间隔 0.4 秒开始飞入
+    });
+
+    // 5. 渲染循环
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
+    animate();
+
+    // 适配屏幕
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+</script>
+</body>
+</html>
